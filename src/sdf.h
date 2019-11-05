@@ -28,6 +28,12 @@
 #ifndef NANO_SDF_H
 #define NANO_SDF_H
 
+#ifndef NANO_SDF_CPP
+#define NANO_SDF_CPP
+#endif // NANO_SDF_CPP
+
+#include <vector>
+
 namespace nanosdf {
 
 /// Internal precision.
@@ -39,43 +45,81 @@ using pixel_t = uint8_t;
 /// Coordinate type.
 using coord_t = int32_t;
 
+// 2D point.
+struct Point
+{
+	precision_t x;
+	precision_t y;
+
+	void zero() noexcept { x = y = 0; }
+
+	[[nodiscard]] precision_t distance_squared(Point other) const noexcept
+	{
+		const precision_t dx = other.x - x;
+		const precision_t dy = other.y - y;
+
+		return dx * dx + dy * dy;
+	}
+};
+
+struct Buffer
+{
+	std::vector<precision_t> distances;
+	std::vector<Point> points;
+
+	void resize(size_t size)
+	{
+		distances.resize(size);
+		points.resize(size);
+	}
+
+	void reserve(size_t capacity)
+	{
+		distances.reserve(capacity);
+		points.reserve(capacity);
+	}
+};
+
 /// Sweep-and-update Euclidean distance transform of an anti-aliased image for contour textures.
 /// Based on edtaa3func.c by Stefan Gustavson.
 ///
 /// White (255) pixels are treated as object pixels, zero pixels are treated as background.
-/// An attempt is made to treat anti-aliased edges correctly. The input image must have
-/// pixels in the range [0,255], and the anti-aliased image should be a box-filter
-/// sampling of the ideal, crisp edge. If the anti-alias region is more than 1 pixel wide,
-/// the result from this transform will be inaccurate.
+/// An attempt is made to treat anti-aliased edges correctly. 
+// The input image must have  pixels in the range [0,255], 
+/// and the anti-aliased image should be a box-filter sampling of the ideal, crisp edge. 
+/// If the anti-alias region is more than 1 pixel wide, the result from this transform will be inaccurate.
 /// Pixels at image border are not calculated and are set to 0.
 ///
 /// The output distance field is encoded as bytes, where 0 = radius (outside) and 255 = -radius (inside).
-/// Input and output can be the same buffer.
-///   out - Output of the distance transform, one byte per pixel.
-///   outstride - Bytes per row on output image. 
-///   radius - The radius of the distance field narrow band in pixels.
-///   img - Input image, one byte per pixel.
-///   width - Width if the image. 
-///   height - Height if the image. 
-///   stride - Bytes per row on input image. 
-int sdfBuildDistanceField(pixel_t* out, coord_t outstride, precision_t radius, const pixel_t* img, coord_t width, coord_t height, coord_t stride);
+///
+/// @note Input and output can be the same buffer.
+///
+/// @param[in, out] out Output of the distance transform, one byte per pixel.
+/// @param[in] outstride - Bytes per row on output image. 
+/// @param[in] radius - Radius of the distance field narrow band in pixels.
+/// @param[in] img Input image, one byte per pixel.
+/// @param[in] width Width if the image. 
+/// @param[in] height Height if the image. 
+/// @param[in] stride Bytes per row on input image. 
+void build_distance_field(pixel_t* out, coord_t outstride, precision_t radius, const pixel_t* img, coord_t width, coord_t height, coord_t stride);
 
-/// Same as distXform, but does not allocate any memory.
-/// The 'temp' array should be enough to fit width * height * sizeof(float) * 3 bytes.
-void sdfBuildDistanceFieldNoAlloc(pixel_t* out, coord_t outstride, precision_t radius, const pixel_t* img, coord_t width, coord_t height, coord_t stride, pixel_t* temp);
+/// Same as above, but uses provided buffer to reuse memory between calls.
+void build_distance_field(pixel_t* out, coord_t outstride, precision_t radius, const pixel_t* img, coord_t width, coord_t height, coord_t stride, Buffer& buffer);
 
-/// This function converts the anti-aliased image where each pixel represents coverage (box-filter
-/// sampling of the ideal, crisp edge) to a distance field with narrow band radius of sqrt(2).
-/// This is the fastest way to turn anti-aliased image to contour texture. This function is good
-/// if you don't need the distance field for effects (i.e. fat outline or drop-shadow).
-/// Input and output buffers must be different.
-///   out - Output of the distance transform, one byte per pixel.
-///   outstride - Bytes per row on output image. 
-///   img - Input image, one byte per pixel.
-///   width - Width if the image. 
-///   height - Height if the image. 
-///   stride - Bytes per row on input image. 
-void sdfCoverageToDistanceField(pixel_t* out, coord_t outstride, const pixel_t* img, coord_t width, coord_t height, coord_t stride);
+/// This function converts the anti-aliased image where each pixel represents coverage 
+/// (box-filter sampling of the ideal, crisp edge) to a distance field with narrow band radius of sqrt(2).
+/// This is the fastest way to turn anti-aliased image to contour texture. 
+/// This function is good if you don't need the distance field for effects (i.e. fat outline or drop-shadow).
+///
+/// @warning Input and output buffers must be different.
+///
+/// @param[in, out] out Output of the distance transform, one byte per pixel.
+/// @param[in] outstride Bytes per row on output image. 
+/// @param[in] img Input image, one byte per pixel.
+/// @param[in] width Width if the image. 
+/// @param[in] height Height if the image. 
+/// @param[in] stride Bytes per row on input image. 
+void coverage_to_distance_field(pixel_t* out, coord_t outstride, const pixel_t* img, coord_t width, coord_t height, coord_t stride);
 
 #endif // NANO_SDF_H
 
@@ -112,7 +156,7 @@ namespace detail {
 
 }
 
-void sdfCoverageToDistanceField(pixel_t* out, coord_t outstride, const pixel_t* img, coord_t width, coord_t height, coord_t stride)
+void coverage_to_distance_field(pixel_t* out, coord_t outstride, const pixel_t* img, coord_t width, coord_t height, coord_t stride)
 {
 	using constants::sqrt_2;
 
@@ -162,13 +206,19 @@ void sdfCoverageToDistanceField(pixel_t* out, coord_t outstride, const pixel_t* 
 				}
 			}
 
+			// Compute gradient direction
+			// Access pixels in sequential order
 			const precision_t px_ms_m1 = static_cast<precision_t>(img[k - stride - 1]);
+			const precision_t px_ms = static_cast<precision_t>(img[k - stride]);
 			const precision_t px_ms_p1 = static_cast<precision_t>(img[k - stride + 1]);
+			const precision_t px_m1 = static_cast<precision_t>(img[k - 1]);
+			const precision_t px_p1 = static_cast<precision_t>(img[k + 1]);
 			const precision_t px_ps_m1 = static_cast<precision_t>(img[k + stride - 1]);
+			const precision_t px_ps = static_cast<precision_t>(img[k + stride]);
 			const precision_t px_ps_p1 = static_cast<precision_t>(img[k + stride + 1]);
 
-			precision_t gx = -px_ms_m1 - sqrt_2 * static_cast<precision_t>(img[k - 1]) - px_ps_m1 + px_ms_p1 + sqrt_2 * static_cast<precision_t>(img[k + 1]) + px_ps_p1;
-			precision_t gy = -px_ms_m1 - sqrt_2 * static_cast<precision_t>(img[k - stride]) - px_ms_p1 + px_ps_m1 + sqrt_2 * static_cast<precision_t>(img[k + stride]) + px_ps_p1;
+			precision_t gx = -px_ms_m1 - sqrt_2 * px_m1 - px_ps_m1 + px_ms_p1 + sqrt_2 * px_p1 + px_ps_p1;
+			precision_t gy = -px_ms_m1 - sqrt_2 * px_ms - px_ms_p1 + px_ps_m1 + sqrt_2 * px_ps + px_ps_p1;
 
 			const precision_t a = static_cast<precision_t>(img[k]) / 255.0f;
 
@@ -262,35 +312,26 @@ namespace detail {
 
 }
 
-struct Point 
-{
-	precision_t x;
-	precision_t y;
-
-	[[nodiscard]] precision_t distance_squared(Point other) const noexcept
-	{
-		const precision_t dx = other.x - x;
-		const precision_t dy = other.y - y;
-
-		return dx * dx + dy * dy;
-	}
-};
-
-void sdfBuildDistanceFieldNoAlloc(pixel_t* out, coord_t outstride, float radius, const pixel_t* img, coord_t width, coord_t height, coord_t stride, pixel_t* temp)
+void build_distance_field(pixel_t* out, coord_t outstride, precision_t radius, const pixel_t* img, coord_t width, coord_t height, coord_t stride, Buffer& buffer)
 {
 	using constants::sqrt_2;
 
 	const coord_t pixel_count = width * height;
 
-	precision_t* const __restrict tdist = reinterpret_cast<precision_t*>(&temp[0]);
-	Point* const __restrict tpt = reinterpret_cast<Point*>(&temp[pixel_count * sizeof(precision_t)]);
+	buffer.resize(pixel_count);
+
+	precision_t* const __restrict tdist = buffer.distances.data();
+	Point* const __restrict tpt = buffer.points.data();
 	
 	// Initialize buffers
 	for (coord_t i = 0; i < pixel_count; ++i)
 	{
-		tpt[i].x = 0;
-		tpt[i].y = 0;
 		tdist[i] = constants::big_value;
+	}
+
+	for (coord_t i = 0; i < pixel_count; ++i)
+	{
+		tpt[i].zero();
 	}
 
 	// Calculate position of the anti-aliased pixels and distance to the boundary of the shape.
@@ -323,8 +364,19 @@ void sdfBuildDistanceFieldNoAlloc(pixel_t* out, coord_t outstride, float radius,
 			}
 
 			// Calculate gradient direction
-			precision_t gx = -(float)img[k - stride - 1] - sqrt_2 * (float)img[k - 1] - (float)img[k + stride - 1] + (float)img[k - stride + 1] + sqrt_2 * (float)img[k + 1] + (float)img[k + stride + 1];
-			precision_t gy = -(float)img[k - stride - 1] - sqrt_2 * (float)img[k - stride] - (float)img[k - stride + 1] + (float)img[k + stride - 1] + sqrt_2 * (float)img[k + stride] + (float)img[k + stride + 1];
+
+			// Access pixels in sequential order
+			const precision_t px_ms_m1 = static_cast<precision_t>(img[k - stride - 1]);
+			const precision_t px_ms = static_cast<precision_t>(img[k - stride]);
+			const precision_t px_ms_p1 = static_cast<precision_t>(img[k - stride + 1]);
+			const precision_t px_m1 = static_cast<precision_t>(img[k - 1]);
+			const precision_t px_p1 = static_cast<precision_t>(img[k + 1]);
+			const precision_t px_ps_m1 = static_cast<precision_t>(img[k + stride - 1]);
+			const precision_t px_ps = static_cast<precision_t>(img[k + stride]);
+			const precision_t px_ps_p1 = static_cast<precision_t>(img[k + stride + 1]);
+
+			precision_t gx = -px_ms_m1 - sqrt_2 * px_m1 - px_ps_m1 + px_ms_p1 + sqrt_2 * px_p1 + px_ps_p1;
+			precision_t gy = -px_ms_m1 - sqrt_2 * px_ms - px_ms_p1 + px_ps_m1 + sqrt_2 * px_ps + px_ps_p1;
 
 			if ((std::fabs(gx) < 0.001f) && (std::fabs(gy) < 0.001f))
 			{
@@ -482,7 +534,7 @@ void sdfBuildDistanceFieldNoAlloc(pixel_t* out, coord_t outstride, float radius,
 					}
 				}
 
-				// (-1,1)
+				// (-1, 1)
 				{
 					const coord_t kn = k - 1 + width;
 
@@ -567,14 +619,11 @@ void sdfBuildDistanceFieldNoAlloc(pixel_t* out, coord_t outstride, float radius,
 	}
 }
 
-int sdfBuildDistanceField(unsigned char* out, int outstride, float radius,
-						  const unsigned char* img, int width, int height, int stride)
+void build_distance_field(pixel_t* out, coord_t outstride, precision_t radius, const pixel_t* img, coord_t width, coord_t height, coord_t stride)
 {
-	unsigned char* temp = (unsigned char*)malloc(width*height*sizeof(float)*3);
-	if (temp == NULL) return 0;
-	sdfBuildDistanceFieldNoAlloc(out, outstride, radius, img, width, height, stride, temp);
-	free(temp);
-	return 1;
+	Buffer buffer;
+
+	build_distance_field(out, outstride, radius, img, width, height, stride, buffer);
 }
 
 }
