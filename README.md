@@ -61,3 +61,7 @@ The code is single header file only. Use following code once in your project to 
 
 ## License
 MIT License
+
+## Fork
+
+This is a C++17 fork of the orignal [C version](https://github.com/memononen/SDF).
